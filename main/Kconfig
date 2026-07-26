@@ -15,7 +15,7 @@ config ALARM_SIREN_CONTROL_DS
     default "V0"
 
 config ALARM_SIREN_TIME_DS
-    string "Blynk remaining time HH:MM:SS datastream"
+    string "Blynk remaining time seconds datastream"
     default "V1"
 
 config ALARM_SIREN_PRESET_DS
@@ -24,14 +24,14 @@ config ALARM_SIREN_PRESET_DS
 
 config ALARM_SIREN_START_DS
     string "Blynk start button datastream"
-    default "V5"
+    default "V3"
 
 config ALARM_SIREN_STOP_DS
     string "Blynk stop button datastream"
-    default "V6"
+    default "V4"
 
 config ALARM_SIREN_STATE_DS
     string "Blynk siren active state datastream"
-    default "V7"
+    default "V5"
 
 endmenu

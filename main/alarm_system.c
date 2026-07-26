@@ -41,15 +41,15 @@
 #endif
 
 #ifndef CONFIG_ALARM_SIREN_START_DS
-#define CONFIG_ALARM_SIREN_START_DS "V5"
+#define CONFIG_ALARM_SIREN_START_DS "V3"
 #endif
 
 #ifndef CONFIG_ALARM_SIREN_STOP_DS
-#define CONFIG_ALARM_SIREN_STOP_DS "V6"
+#define CONFIG_ALARM_SIREN_STOP_DS "V4"
 #endif
 
 #ifndef CONFIG_ALARM_SIREN_STATE_DS
-#define CONFIG_ALARM_SIREN_STATE_DS "V7"
+#define CONFIG_ALARM_SIREN_STATE_DS "V5"
 #endif
 
 #define MAX_HOURS_VALUE      99U
@@ -170,33 +170,6 @@ static bool parse_non_negative_u32(const char *data, int data_len, uint32_t *val
     return true;
 }
 
-static void decompose_seconds(uint32_t total_seconds, uint32_t *hours, uint32_t *minutes, uint32_t *seconds)
-{
-    const uint32_t safe_seconds = clamp_u32(total_seconds, MAX_SIREN_SECONDS);
-
-    if (hours != NULL) {
-        *hours = safe_seconds / 3600U;
-    }
-
-    if (minutes != NULL) {
-        *minutes = (safe_seconds % 3600U) / 60U;
-    }
-
-    if (seconds != NULL) {
-        *seconds = safe_seconds % 60U;
-    }
-}
-
-static void format_hhmmss(uint32_t total_seconds, char value[9])
-{
-    uint32_t hours;
-    uint32_t minutes;
-    uint32_t seconds;
-
-    decompose_seconds(total_seconds, &hours, &minutes, &seconds);
-    snprintf(value, 9, "%02" PRIu32 ":%02" PRIu32 ":%02" PRIu32, hours, minutes, seconds);
-}
-
 static void siren_set_gpio(bool enabled)
 {
     const int on_level = CONFIG_ALARM_SIREN_ACTIVE_LEVEL ? 1 : 0;
@@ -207,10 +180,14 @@ static void siren_set_gpio(bool enabled)
 
 static void publish_remaining_time(uint32_t remaining_seconds)
 {
-    char value[9];
+    const edgent_err rc = edgent_publish_ds_int(CONFIG_ALARM_SIREN_TIME_DS, remaining_seconds);
 
-    format_hhmmss(remaining_seconds, value);
-    edgent_publish_ds_str(CONFIG_ALARM_SIREN_TIME_DS, value);
+    if (rc != EDGENT_OK) {
+        ESP_LOGW(TAG, "Failed to publish remaining time: %" PRIu32 " s, rc=%d", remaining_seconds, rc);
+        return;
+    }
+
+    ESP_LOGI(TAG, "Published remaining time: %" PRIu32 " s", remaining_seconds);
 }
 
 static void publish_selected_preset(uint32_t preset_index)
@@ -220,7 +197,15 @@ static void publish_selected_preset(uint32_t preset_index)
 
 static void publish_running_state(bool enabled)
 {
-    edgent_publish_ds_int(CONFIG_ALARM_SIREN_STATE_DS, enabled ? 1 : 0);
+    const int state_value = enabled ? 1 : 0;
+    const edgent_err rc = edgent_publish_ds_int(CONFIG_ALARM_SIREN_STATE_DS, state_value);
+
+    if (rc != EDGENT_OK) {
+        ESP_LOGW(TAG, "Failed to publish siren state: %d, rc=%d", state_value, rc);
+        return;
+    }
+
+    ESP_LOGI(TAG, "Published siren state: %d", state_value);
 }
 
 static void reset_button_datastreams(void)
