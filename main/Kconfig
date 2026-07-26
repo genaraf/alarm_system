@@ -1,0 +1,37 @@
+menu "Alarm system"
+
+config ALARM_SIREN_GPIO
+    int "Siren GPIO"
+    default 4
+    range 0 21
+
+config ALARM_SIREN_ACTIVE_LEVEL
+    int "Siren active GPIO level"
+    default 1
+    range 0 1
+
+config ALARM_SIREN_CONTROL_DS
+    string "Blynk/API seconds control datastream"
+    default "V0"
+
+config ALARM_SIREN_TIME_DS
+    string "Blynk remaining time HH:MM:SS datastream"
+    default "V1"
+
+config ALARM_SIREN_PRESET_DS
+    string "Blynk preset menu datastream"
+    default "V2"
+
+config ALARM_SIREN_START_DS
+    string "Blynk start button datastream"
+    default "V5"
+
+config ALARM_SIREN_STOP_DS
+    string "Blynk stop button datastream"
+    default "V6"
+
+config ALARM_SIREN_STATE_DS
+    string "Blynk siren active state datastream"
+    default "V7"
+
+endmenu
