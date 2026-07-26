@@ -20,6 +20,21 @@ UI для человека:
 - `V4` (`Integer`): кнопка `Stop`
 - `V5` (`Integer`, опционально): состояние сирены, `1` или `0`
 
+Итоговая конфигурация template:
+
+| Name | Pin | Type | Widget | Назначение |
+|---|---|---|---|---|
+| `V0` | `V0` | `Integer` | нет | внешний API: `N` секунд / `0` стоп |
+| `V1` | `V1` | `Integer` | `Formatted Text`, `Value Display` или `Labeled Value` | оставшееся время в секундах |
+| `V2` | `V2` | `Integer` или `Enumerable` | `Menu` / `Dropdown` | preset `0..5` |
+| `V3` | `V3` | `Integer` | `Button` `Push` | `Start` |
+| `V4` | `V4` | `Integer` | `Button` `Push` | `Stop` |
+| `V5` | `V5` | `Integer` | `LED` или `State` | состояние сирены `1/0` |
+
+Важно:
+- в `Blynk` поле `Name` должно совпадать с `V`-именем, то есть `V0`, `V1`, `V2`, `V3`, `V4`, `V5`
+- для этой прошивки одного совпадения `Pin` недостаточно, потому что `Blynk MQTT API` публикует значения по имени datastream
+
 ## Рекомендованный UI в Blynk
 
 Сделайте на дашборде:
