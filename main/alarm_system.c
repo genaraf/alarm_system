@@ -14,6 +14,7 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -52,11 +53,42 @@
 #define CONFIG_ALARM_SIREN_STATE_DS "V5"
 #endif
 
+#ifndef CONFIG_ALARM_RECONFIG_BUTTON_GPIO
+#define CONFIG_ALARM_RECONFIG_BUTTON_GPIO 9
+#endif
+
+#ifndef CONFIG_ALARM_RECONFIG_BUTTON_ACTIVE_LEVEL
+#define CONFIG_ALARM_RECONFIG_BUTTON_ACTIVE_LEVEL 0
+#endif
+
+#ifndef CONFIG_ALARM_STATUS_LED_GPIO
+#define CONFIG_ALARM_STATUS_LED_GPIO 8
+#endif
+
+#ifndef CONFIG_ALARM_STATUS_LED_ACTIVE_LEVEL
+#define CONFIG_ALARM_STATUS_LED_ACTIVE_LEVEL 1
+#endif
+
+#ifndef CONFIG_ALARM_WIFI_RSSI_DS
+#define CONFIG_ALARM_WIFI_RSSI_DS "V6"
+#endif
+
+#ifndef CONFIG_ALARM_WIFI_RSSI_PUBLISH_INTERVAL_SECONDS
+#define CONFIG_ALARM_WIFI_RSSI_PUBLISH_INTERVAL_SECONDS 15
+#endif
+
 #define MAX_HOURS_VALUE      99U
 #define MAX_MINSEC_VALUE     59U
 #define MAX_SIREN_SECONDS    ((MAX_HOURS_VALUE * 3600U) + (MAX_MINSEC_VALUE * 60U) + MAX_MINSEC_VALUE)
 #define TIMER_POLL_INTERVAL_MS 1000U
 #define DEFAULT_PRESET_INDEX 0U
+#define BUTTON_POLL_INTERVAL_MS 20U
+#define BUTTON_DEBOUNCE_MS 30U
+#define BUTTON_DOUBLE_CLICK_TIMEOUT_MS 400U
+#define BUTTON_LONG_PRESS_MS 5000U
+#define STATUS_LED_FAST_BLINK_MS 125U
+#define STATUS_LED_SLOW_BLINK_MS 500U
+#define STATUS_LED_ERROR_BLINK_MS 75U
 
 static const uint32_t SIREN_PRESET_SECONDS[] = {
     5U,
@@ -74,12 +106,25 @@ typedef struct {
     bool siren_enabled;
 } siren_state_t;
 
+typedef enum {
+    STATUS_LED_PATTERN_OFF = 0,
+    STATUS_LED_PATTERN_ON,
+    STATUS_LED_PATTERN_BLINK_FAST,
+    STATUS_LED_PATTERN_BLINK_SLOW,
+    STATUS_LED_PATTERN_BLINK_ERROR,
+} status_led_pattern_t;
+
 static const char *TAG = "alarm_system";
 
 static siren_state_t s_siren_state;
 static SemaphoreHandle_t s_siren_mutex;
 static TaskHandle_t s_siren_task_handle;
 static esp_timer_handle_t s_siren_timer;
+static volatile status_led_pattern_t s_status_led_pattern = STATUS_LED_PATTERN_BLINK_FAST;
+static bool s_edgent_connected;
+static bool s_wifi_rssi_published;
+static int8_t s_last_wifi_rssi;
+static TickType_t s_last_wifi_rssi_publish_tick;
 
 static size_t siren_preset_count(void)
 {
@@ -178,6 +223,62 @@ static void siren_set_gpio(bool enabled)
     gpio_set_level(CONFIG_ALARM_SIREN_GPIO, enabled ? on_level : off_level);
 }
 
+static void status_led_set_gpio(bool enabled)
+{
+    const int on_level = CONFIG_ALARM_STATUS_LED_ACTIVE_LEVEL ? 1 : 0;
+    const int off_level = on_level ? 0 : 1;
+
+    gpio_set_level(CONFIG_ALARM_STATUS_LED_GPIO, enabled ? on_level : off_level);
+}
+
+static const char *edgent_state_to_str(edgent_state_t state)
+{
+    switch (state) {
+    case EDGENT_STATE_UNKNOWN:
+        return "UNKNOWN";
+    case EDGENT_STATE_IDLE:
+        return "IDLE";
+    case EDGENT_STATE_CONNECTING_NET:
+        return "CONNECTING_NET";
+    case EDGENT_STATE_CONNECTING_CLOUD:
+        return "CONNECTING_CLOUD";
+    case EDGENT_STATE_CONNECTED:
+        return "CONNECTED";
+    case EDGENT_STATE_WAIT_CONFIG:
+        return "WAIT_CONFIG";
+    case EDGENT_STATE_OTA_UPGRADE:
+        return "OTA_UPGRADE";
+    case EDGENT_STATE_ERROR:
+        return "ERROR";
+    default:
+        return "INVALID";
+    }
+}
+
+static status_led_pattern_t status_led_pattern_from_state(edgent_state_t state)
+{
+    switch (state) {
+    case EDGENT_STATE_CONNECTED:
+        return STATUS_LED_PATTERN_ON;
+    case EDGENT_STATE_WAIT_CONFIG:
+        return STATUS_LED_PATTERN_BLINK_SLOW;
+    case EDGENT_STATE_ERROR:
+        return STATUS_LED_PATTERN_BLINK_ERROR;
+    case EDGENT_STATE_IDLE:
+    case EDGENT_STATE_CONNECTING_NET:
+    case EDGENT_STATE_CONNECTING_CLOUD:
+    case EDGENT_STATE_OTA_UPGRADE:
+    case EDGENT_STATE_UNKNOWN:
+    default:
+        return STATUS_LED_PATTERN_BLINK_FAST;
+    }
+}
+
+static void status_led_set_pattern(status_led_pattern_t pattern)
+{
+    s_status_led_pattern = pattern;
+}
+
 static void publish_remaining_time(uint32_t remaining_seconds)
 {
     const edgent_err rc = edgent_publish_ds_int(CONFIG_ALARM_SIREN_TIME_DS, remaining_seconds);
@@ -206,6 +307,54 @@ static void publish_running_state(bool enabled)
     }
 
     ESP_LOGI(TAG, "Published siren state: %d", state_value);
+}
+
+static void publish_wifi_rssi(int8_t rssi)
+{
+    const edgent_err rc = edgent_publish_ds_int(CONFIG_ALARM_WIFI_RSSI_DS, rssi);
+
+    if (rc != EDGENT_OK) {
+        ESP_LOGW(TAG, "Failed to publish Wi-Fi RSSI: %d dBm, rc=%d", rssi, rc);
+        return;
+    }
+
+    s_last_wifi_rssi = rssi;
+    s_last_wifi_rssi_publish_tick = xTaskGetTickCount();
+    s_wifi_rssi_published = true;
+
+    ESP_LOGI(TAG, "Published Wi-Fi RSSI: %d dBm", rssi);
+}
+
+static void maybe_publish_wifi_rssi(bool force)
+{
+    wifi_ap_record_t ap_info;
+    const TickType_t now = xTaskGetTickCount();
+    const TickType_t min_interval_ticks = pdMS_TO_TICKS(CONFIG_ALARM_WIFI_RSSI_PUBLISH_INTERVAL_SECONDS * 1000U);
+    esp_err_t err;
+
+    if (!s_edgent_connected) {
+        return;
+    }
+
+    if (!force && s_wifi_rssi_published &&
+        (now - s_last_wifi_rssi_publish_tick) < min_interval_ticks) {
+        return;
+    }
+
+    err = esp_wifi_sta_get_ap_info(&ap_info);
+
+    if (err == ESP_OK) {
+        if (force || !s_wifi_rssi_published || ap_info.rssi != s_last_wifi_rssi) {
+            publish_wifi_rssi(ap_info.rssi);
+        } else {
+            s_last_wifi_rssi_publish_tick = now;
+        }
+        return;
+    }
+
+    if (err != ESP_ERR_WIFI_CONN && err != ESP_ERR_WIFI_NOT_CONNECT) {
+        ESP_LOGW(TAG, "Failed to read Wi-Fi RSSI: %s", esp_err_to_name(err));
+    }
 }
 
 static void reset_button_datastreams(void)
@@ -379,12 +528,141 @@ static void handle_downlink_datastream(const char *topic, int topic_len, const c
 
 static void on_initial_connection(void)
 {
+    s_edgent_connected = true;
     siren_publish_full_state();
+    maybe_publish_wifi_rssi(true);
+}
+
+static void on_edgent_state_changed(void *handler_arg, esp_event_base_t base, int32_t id, void *event_data)
+{
+    const edgent_state_evt_t *state_event = (const edgent_state_evt_t *)event_data;
+
+    (void)handler_arg;
+    (void)base;
+
+    if (id != EDGENT_EVENT_STATE_CHANGED || state_event == NULL) {
+        return;
+    }
+
+    s_edgent_connected = state_event->curr == EDGENT_STATE_CONNECTED;
+    if (!s_edgent_connected) {
+        s_wifi_rssi_published = false;
+        s_last_wifi_rssi_publish_tick = 0;
+    }
+
+    status_led_set_pattern(status_led_pattern_from_state(state_event->curr));
+    ESP_LOGI(TAG, "Edgent state: %s -> %s",
+             edgent_state_to_str(state_event->prev),
+             edgent_state_to_str(state_event->curr));
 }
 
 static void on_reboot_request(void)
 {
     esp_restart();
+}
+
+static void status_led_task(void *arg)
+{
+    status_led_pattern_t active_pattern = STATUS_LED_PATTERN_OFF;
+    bool led_on = false;
+
+    (void)arg;
+
+    while (true) {
+        const status_led_pattern_t next_pattern = s_status_led_pattern;
+
+        if (next_pattern != active_pattern) {
+            active_pattern = next_pattern;
+            led_on = false;
+        }
+
+        switch (active_pattern) {
+        case STATUS_LED_PATTERN_OFF:
+            status_led_set_gpio(false);
+            vTaskDelay(pdMS_TO_TICKS(100));
+            break;
+        case STATUS_LED_PATTERN_ON:
+            status_led_set_gpio(true);
+            vTaskDelay(pdMS_TO_TICKS(100));
+            break;
+        case STATUS_LED_PATTERN_BLINK_FAST:
+            led_on = !led_on;
+            status_led_set_gpio(led_on);
+            vTaskDelay(pdMS_TO_TICKS(STATUS_LED_FAST_BLINK_MS));
+            break;
+        case STATUS_LED_PATTERN_BLINK_SLOW:
+            led_on = !led_on;
+            status_led_set_gpio(led_on);
+            vTaskDelay(pdMS_TO_TICKS(STATUS_LED_SLOW_BLINK_MS));
+            break;
+        case STATUS_LED_PATTERN_BLINK_ERROR:
+            led_on = !led_on;
+            status_led_set_gpio(led_on);
+            vTaskDelay(pdMS_TO_TICKS(STATUS_LED_ERROR_BLINK_MS));
+            break;
+        default:
+            status_led_set_gpio(false);
+            vTaskDelay(pdMS_TO_TICKS(100));
+            break;
+        }
+    }
+}
+
+static void reconfig_button_task(void *arg)
+{
+    const int active_level = CONFIG_ALARM_RECONFIG_BUTTON_ACTIVE_LEVEL ? 1 : 0;
+    const TickType_t poll_interval = pdMS_TO_TICKS(BUTTON_POLL_INTERVAL_MS);
+    const TickType_t debounce_ticks = pdMS_TO_TICKS(BUTTON_DEBOUNCE_MS);
+    const TickType_t double_click_ticks = pdMS_TO_TICKS(BUTTON_DOUBLE_CLICK_TIMEOUT_MS);
+    const TickType_t long_press_ticks = pdMS_TO_TICKS(BUTTON_LONG_PRESS_MS);
+    TickType_t now = xTaskGetTickCount();
+    bool raw_pressed = gpio_get_level(CONFIG_ALARM_RECONFIG_BUTTON_GPIO) == active_level;
+    bool stable_pressed = raw_pressed;
+    TickType_t raw_changed_at = now;
+    TickType_t pressed_at = now;
+    TickType_t last_release_at = 0;
+    uint32_t click_count = 0;
+    bool long_press_handled = false;
+
+    (void)arg;
+
+    while (true) {
+        const bool sampled_pressed = gpio_get_level(CONFIG_ALARM_RECONFIG_BUTTON_GPIO) == active_level;
+
+        now = xTaskGetTickCount();
+
+        if (sampled_pressed != raw_pressed) {
+            raw_pressed = sampled_pressed;
+            raw_changed_at = now;
+        }
+
+        if (stable_pressed != raw_pressed && (now - raw_changed_at) >= debounce_ticks) {
+            stable_pressed = raw_pressed;
+
+            if (stable_pressed) {
+                pressed_at = now;
+                long_press_handled = false;
+            } else if (!long_press_handled) {
+                click_count++;
+                last_release_at = now;
+            }
+        }
+
+        if (stable_pressed && !long_press_handled && (now - pressed_at) >= long_press_ticks) {
+            long_press_handled = true;
+            click_count = 0;
+            ESP_LOGI(TAG, "BOOT long-press detected, resetting Blynk.Edgent config");
+            edgent_config_reset();
+        } else if (!stable_pressed && click_count > 0 && (now - last_release_at) >= double_click_ticks) {
+            if (click_count >= 2U) {
+                ESP_LOGI(TAG, "BOOT double-click detected, starting Blynk.Edgent reconfigure");
+                edgent_config_start();
+            }
+            click_count = 0;
+        }
+
+        vTaskDelay(poll_interval);
+    }
 }
 
 static void siren_task(void *arg)
@@ -419,6 +697,8 @@ static void siren_task(void *arg)
         } else if (should_publish) {
             publish_remaining_time(remaining_seconds);
         }
+
+        maybe_publish_wifi_rssi(false);
     }
 }
 
@@ -441,6 +721,16 @@ static void init_default_event_loop(void)
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         ESP_ERROR_CHECK(err);
     }
+}
+
+static void init_edgent_event_handler(void)
+{
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(
+        EDGENT_EVENT_BASE,
+        EDGENT_EVENT_STATE_CHANGED,
+        on_edgent_state_changed,
+        NULL,
+        NULL));
 }
 
 static void siren_init(void)
@@ -470,6 +760,36 @@ static void siren_init(void)
     xTaskCreate(siren_task, "siren_task", 4096, NULL, 5, &s_siren_task_handle);
 }
 
+static void status_led_init(void)
+{
+    const gpio_config_t gpio_config_led = {
+        .pin_bit_mask = 1ULL << CONFIG_ALARM_STATUS_LED_GPIO,
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+
+    ESP_ERROR_CHECK(gpio_config(&gpio_config_led));
+    status_led_set_gpio(false);
+    xTaskCreate(status_led_task, "status_led_task", 2048, NULL, 4, NULL);
+}
+
+static void reconfig_button_init(void)
+{
+    const bool active_low = CONFIG_ALARM_RECONFIG_BUTTON_ACTIVE_LEVEL == 0;
+    const gpio_config_t gpio_config_button = {
+        .pin_bit_mask = 1ULL << CONFIG_ALARM_RECONFIG_BUTTON_GPIO,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = active_low ? GPIO_PULLUP_ENABLE : GPIO_PULLUP_DISABLE,
+        .pull_down_en = active_low ? GPIO_PULLDOWN_DISABLE : GPIO_PULLDOWN_ENABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+
+    ESP_ERROR_CHECK(gpio_config(&gpio_config_button));
+    xTaskCreate(reconfig_button_task, "reconfig_button_task", 3072, NULL, 4, NULL);
+}
+
 void app_main(void)
 {
     const edgent_config_t edgent_config = {
@@ -480,7 +800,10 @@ void app_main(void)
 
     init_nvs();
     init_default_event_loop();
+    init_edgent_event_handler();
     siren_init();
+    status_led_init();
+    reconfig_button_init();
     edgent_init(&edgent_config);
     edgent_start();
 }

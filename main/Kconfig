@@ -10,6 +10,47 @@ config ALARM_SIREN_ACTIVE_LEVEL
     default 1
     range 0 1
 
+config ALARM_RECONFIG_BUTTON_GPIO
+    int "Reconfigure button GPIO"
+    default 9
+    range 0 21
+    help
+        BOOT button GPIO for entering Blynk.Edgent reconfiguration mode.
+
+config ALARM_RECONFIG_BUTTON_ACTIVE_LEVEL
+    int "Reconfigure button active GPIO level"
+    default 0
+    range 0 1
+    help
+        Usually 0 for the ESP32-C3 BOOT button wired to GND.
+
+config ALARM_STATUS_LED_GPIO
+    int "Status LED GPIO"
+    default 8
+    range 0 21
+    help
+        GPIO for a simple digital status LED driven by Blynk.Edgent state.
+
+config ALARM_STATUS_LED_ACTIVE_LEVEL
+    int "Status LED active GPIO level"
+    default 1
+    range 0 1
+    help
+        Set to 0 if the LED is active-low on your board.
+
+config ALARM_WIFI_RSSI_DS
+    string "Blynk Wi-Fi RSSI datastream"
+    default "V6"
+    help
+        Datastream used to publish current Wi-Fi signal strength in dBm.
+
+config ALARM_WIFI_RSSI_PUBLISH_INTERVAL_SECONDS
+    int "Wi-Fi RSSI publish interval, seconds"
+    default 15
+    range 1 3600
+    help
+        Minimum interval between RSSI updates while the device is connected.
+
 config ALARM_SIREN_CONTROL_DS
     string "Blynk/API seconds control datastream"
     default "V0"
