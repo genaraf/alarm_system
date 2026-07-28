@@ -9,6 +9,7 @@
 - Плата: [ESP32-C3 Super Mini](https://www.espboards.dev/esp32/esp32-c3-super-mini/)
 - Ключ питания нагрузки: [Pololu Mini MOSFET Slide Switch with Reverse Voltage Protection, SV (item 2811)](https://www.pololu.com/product/2811)
 - Понижающий преобразователь питания: [Pololu 5V, 2.5A Step-Down Voltage Regulator D24V25F5 (item 2850)](https://www.pololu.com/product/2850)
+- Сирена `12V`: [AliExpress product link](https://aliexpress.com/item/1005007682313103.html)
 
 ### Схема подключения
 
@@ -64,7 +65,7 @@ Net labels:
 - `U2` -> `Pololu 2850 / D24V25F5`, buck `12 V -> 5 V`, до `2.5 A`
 - `U1` -> `ESP32-C3 Super Mini`, питание через вывод `5V`
 - `U3` -> `Pololu 2811`, high-side load switch для сирены
-- `J2` -> выходной клеммник `2 pin` на сирену `12 V`
+- `J2` -> выходной клеммник `2 pin` на сирену `12 V` (см. ссылку выше)
 
 Правила подключения:
 
@@ -94,7 +95,8 @@ Net labels:
 
 - `ESP32-C3 Super Mini` — компактная плата на `ESP32-C3` с `4 MB` flash, native USB и выведенными `GPIO8`/`GPIO9`
 - модуль `Pololu 2811` — компактный high-side MOSFET power switch с защитой от переполюсовки; его можно использовать как электронный выключатель питания нагрузки
-- модуль `Pololu 2850` — понижающий DC-DC регулятор `5 V / 2.5 A` с входным диапазоном `6 V – 38 V`; его можно использовать как источник `5 V` для сирены, периферии или всей низковольтной части устройства
+- модуль `Pololu 2850` — понижающий DC-DC регулятор `5 V / 2.5 A` с входным диапазоном `6 V – 38 V`; в этой схеме он используется как источник `5 V` для `ESP32` и низковольтной части устройства
+- сирена подключается к `J2` и коммутируется модулем `Pololu 2811` по линии `12 V`
 - в этой референсной схеме предполагается `VIN = 12V`
 
 Что умеет прошивка:
